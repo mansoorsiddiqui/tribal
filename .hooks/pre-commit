@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TRIBAL_PATH="$(git rev-parse --show-toplevel)"
+TRIBAL_CLI="$TRIBAL_PATH/tribal"
+
+# Ensure CLI exists
+if [ ! -f "$TRIBAL_CLI" ]; then
+  echo "WARNING: tribal CLI not found at $TRIBAL_CLI, skipping pre-commit checks"
+  exit 0
+fi
+
+# 1. Security filter: check all staged .md files in entries/
+staged_files=$(git diff --cached --name-only --diff-filter=ACM | grep '^entries/.*\.md$' || true)
+
+if [ -n "$staged_files" ]; then
+  for file in $staged_files; do
+    full_path="$TRIBAL_PATH/$file"
+    if [ -f "$full_path" ]; then
+      # Source security patterns from tribal CLI
+      export TRIBAL_PATH
+      if ! bash "$TRIBAL_CLI" _security_check "$full_path" 2>/dev/null; then
+        # Inline security check as fallback
+        patterns=(
+          'sk-[a-zA-Z0-9]{20,}'
+          'AKIA[0-9A-Z]{16}'
+          'ghp_[a-zA-Z0-9]{36}'
+          'password[[:space:]]*[=:][[:space:]]*[^[:space:]]+'
+          'token[[:space:]]*[=:][[:space:]]*[^[:space:]]+'
+          'mongodb(\+srv)?://[^@]+@'
+          'postgres(ql)?://[^@]+@'
+          '-----BEGIN .* PRIVATE KEY-----'
+          'eyJ[a-zA-Z0-9_-]{10,}\.'
+        )
+        for pattern in "${patterns[@]}"; do
+          if grep -qE "$pattern" "$full_path" 2>/dev/null; then
+            echo "ERROR: Security filter caught potential secret in $file"
+            echo "  Pattern: $pattern"
+            echo "  Use 'tribal add --force' to override."
+            exit 1
+          fi
+        done
+      fi
+    fi
+  done
+fi
+
+# 2. INDEX.md freshness: regenerate and stage if stale
+if [ -x "$TRIBAL_CLI" ] || [ -f "$TRIBAL_CLI" ]; then
+  bash "$TRIBAL_CLI" reindex 2>/dev/null || true
+  if ! git diff --quiet "$TRIBAL_PATH/INDEX.md" 2>/dev/null; then
+    git add "$TRIBAL_PATH/INDEX.md"
+    echo "INDEX.md was stale; regenerated and staged."
+  fi
+fi

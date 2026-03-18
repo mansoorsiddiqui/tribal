@@ -1,0 +1,759 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── Constants & Defaults ─────────────────────────────────────
+TRIBAL_VERSION="0.1.0"
+TRIBAL_PATH="${TRIBAL_PATH:-$(pwd)}"
+TRIBAL_AUTHOR="${TRIBAL_AUTHOR:-$(git config user.name 2>/dev/null || echo 'unknown')}"
+ENTRIES_DIR="$TRIBAL_PATH/entries"
+INDEX_FILE="$TRIBAL_PATH/INDEX.md"
+CONFIG_FILE="$TRIBAL_PATH/tribal.config.yml"
+
+# ── Security Patterns ────────────────────────────────────────
+SECURITY_PATTERNS=(
+  'sk-[a-zA-Z0-9]{20,}'
+  'AKIA[0-9A-Z]{16}'
+  'ghp_[a-zA-Z0-9]{36}'
+  'password[[:space:]]*[=:][[:space:]]*[^[:space:]]+'
+  'token[[:space:]]*[=:][[:space:]]*[^[:space:]]+'
+  'mongodb(\+srv)?://[^@]+@'
+  'postgres(ql)?://[^@]+@'
+  '-----BEGIN .* PRIVATE KEY-----'
+  'eyJ[a-zA-Z0-9_-]{10,}\.'
+)
+
+# ── Utility Functions ─────────────────────────────────────────
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+info() {
+  echo ":: $*"
+}
+
+confirm() {
+  local prompt="${1:-Continue?}"
+  read -r -p "$prompt [y/N] " response
+  [[ "$response" =~ ^[Yy]$ ]]
+}
+
+slugify() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
+}
+
+resolve_collision() {
+  local base="$1"
+  local dir="$2"
+  local slug="$base"
+  local counter=2
+  while [ -f "$dir/$slug.md" ]; do
+    slug="${base}-${counter}"
+    counter=$((counter + 1))
+    if [ "$counter" -gt 999 ]; then
+      die "Too many collisions for slug: $base"
+    fi
+  done
+  echo "$slug"
+}
+
+file_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
+today() {
+  date +%Y-%m-%d
+}
+
+now_epoch() {
+  date +%s
+}
+
+# Extract value of a field from YAML frontmatter (between --- markers)
+get_field() {
+  local file="$1"
+  local field="$2"
+  sed -n '/^---$/,/^---$/p' "$file" | grep "^${field}:" | head -1 | sed "s/^${field}:[[:space:]]*//" | sed 's/^["'"'"']//;s/["'"'"']$//'
+}
+
+# Extract all frontmatter as raw text
+get_frontmatter() {
+  sed -n '/^---$/,/^---$/p' "$1"
+}
+
+# Extract body (everything after second ---)
+get_body() {
+  sed '1,/^---$/!d' "$1" | tail -n +1
+  # Actually: skip frontmatter, return rest
+  awk 'BEGIN{c=0} /^---$/{c++;next} c>=2{print}' "$1"
+}
+
+security_check() {
+  local file="$1"
+  local found=0
+  for pattern in "${SECURITY_PATTERNS[@]}"; do
+    if grep -qE -- "$pattern" "$file" 2>/dev/null; then
+      local line
+      line=$(grep -nE -- "$pattern" "$file" | head -1)
+      echo "SECURITY: Potential secret matched pattern '$pattern'" >&2
+      echo "  at: $line" >&2
+      found=1
+    fi
+  done
+  return $found
+}
+
+generate_index() {
+  local index_file="${1:-$INDEX_FILE}"
+  local entries_dir="${2:-$ENTRIES_DIR}"
+
+  {
+    echo "# Tribal Knowledge Index"
+    echo ""
+    echo "| Path | Category | Tags | Confidence | Summary |"
+    echo "|------|----------|------|------------|---------|"
+
+    if [ -d "$entries_dir" ]; then
+      find "$entries_dir" -name '*.md' -type f | sort | while IFS= read -r file; do
+        local rel_path="${file#$TRIBAL_PATH/}"
+        local title category tags confidence summary
+        title=$(get_field "$file" "title")
+        category=$(get_field "$file" "category")
+        tags=$(get_field "$file" "tags")
+        confidence=$(get_field "$file" "confidence")
+        summary=$(get_field "$file" "summary")
+        # Clean up tags: remove brackets
+        tags=$(echo "$tags" | sed 's/^\[//;s/\]$//')
+        echo "| $rel_path | $category | $tags | $confidence | $summary |"
+      done
+    fi
+  } > "$index_file"
+}
+
+# ── Command: init ─────────────────────────────────────────────
+cmd_init() {
+  local target="${1:-$TRIBAL_PATH}"
+  TRIBAL_PATH="$target"
+  ENTRIES_DIR="$TRIBAL_PATH/entries"
+  INDEX_FILE="$TRIBAL_PATH/INDEX.md"
+
+  info "Initializing tribal knowledge base at $TRIBAL_PATH"
+
+  mkdir -p "$ENTRIES_DIR"
+  mkdir -p "$TRIBAL_PATH/.hooks"
+
+  # Initialize git repo if not already one
+  if [ ! -d "$TRIBAL_PATH/.git" ]; then
+    git -C "$TRIBAL_PATH" init -q
+    info "Initialized git repository"
+  fi
+
+  # Install pre-commit hook
+  local hook_src="$TRIBAL_PATH/.hooks/pre-commit"
+  local hook_dst="$TRIBAL_PATH/.git/hooks/pre-commit"
+  if [ -f "$hook_src" ]; then
+    ln -sf "$hook_src" "$hook_dst" 2>/dev/null || cp "$hook_src" "$hook_dst"
+    chmod +x "$hook_dst"
+    info "Installed pre-commit hook"
+  fi
+
+  # Generate empty INDEX.md
+  generate_index "$TRIBAL_PATH/INDEX.md" "$ENTRIES_DIR"
+  info "Generated INDEX.md"
+
+  # Create .gitignore if missing
+  if [ ! -f "$TRIBAL_PATH/.gitignore" ]; then
+    cat > "$TRIBAL_PATH/.gitignore" << 'GITIGNORE'
+.tribal-sync-state.json
+*.swp
+*.swo
+*~
+.DS_Store
+GITIGNORE
+    info "Created .gitignore"
+  fi
+
+  info "Done! Add entries with: tribal add --title \"Your Title\""
+}
+
+# ── Command: add ──────────────────────────────────────────────
+cmd_add() {
+  local title="" category="" tags="" confidence="medium" body="" force=0 summary=""
+  local interactive=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title)    title="$2"; shift 2 ;;
+      --category) category="$2"; shift 2 ;;
+      --tags)     tags="$2"; shift 2 ;;
+      --confidence) confidence="$2"; shift 2 ;;
+      --summary)  summary="$2"; shift 2 ;;
+      --body)     body="$2"; shift 2 ;;
+      --force)    force=1; shift ;;
+      *)          die "Unknown flag for add: $1" ;;
+    esac
+  done
+
+  # Interactive mode if no title given
+  if [ -z "$title" ]; then
+    interactive=1
+    read -r -p "Title: " title
+    [ -z "$title" ] && die "Title is required"
+
+    echo "Categories: environment, debugging, architecture, process, tooling, testing, deployment, security"
+    read -r -p "Category: " category
+
+    read -r -p "Tags (comma-separated): " tags
+
+    read -r -p "Confidence (high/medium/low) [medium]: " confidence
+    confidence="${confidence:-medium}"
+
+    read -r -p "One-line summary: " summary
+
+    echo "Enter body (end with Ctrl-D):"
+    body=$(cat)
+  fi
+
+  [ -z "$title" ] && die "Title is required"
+
+  # Validate category
+  local valid_categories="environment debugging architecture process tooling testing deployment security"
+  if [ -n "$category" ] && ! echo "$valid_categories" | grep -qw "$category"; then
+    die "Invalid category: $category. Valid: $valid_categories"
+  fi
+
+  # Validate confidence
+  case "$confidence" in
+    high|medium|low) ;;
+    *) die "Invalid confidence: $confidence. Must be high, medium, or low." ;;
+  esac
+
+  # Generate slug
+  local base_slug
+  base_slug=$(slugify "$title")
+  local slug
+  slug=$(resolve_collision "$base_slug" "$ENTRIES_DIR")
+  local filepath="$ENTRIES_DIR/$slug.md"
+
+  # Format tags
+  local formatted_tags="[]"
+  if [ -n "$tags" ]; then
+    formatted_tags="[$(echo "$tags" | sed 's/[[:space:]]*,[[:space:]]*/,/g' | sed 's/,/, /g')]"
+  fi
+
+  # Write entry
+  local date_today
+  date_today=$(today)
+
+  cat > "$filepath" << ENTRY
+---
+title: "$title"
+slug: $slug
+category: $category
+tags: $formatted_tags
+confidence: $confidence
+author: $TRIBAL_AUTHOR
+created: $date_today
+last_updated: $date_today
+last_verified: $date_today
+verified_by: $TRIBAL_AUTHOR
+summary: "$summary"
+---
+
+${body:-## Problem
+
+## Solution
+
+## Context
+}
+ENTRY
+
+  # Security check
+  if [ "$force" -eq 0 ]; then
+    if ! security_check "$filepath"; then
+      rm "$filepath"
+      die "Security check failed. Use --force to bypass."
+    fi
+  fi
+
+  # Rebuild index
+  generate_index
+
+  info "Created entry: $filepath"
+  echo "  slug: $slug"
+}
+
+# ── Command: search ───────────────────────────────────────────
+cmd_search() {
+  local query="" filter_category="" filter_tags="" test_mode=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --category) filter_category="$2"; shift 2 ;;
+      --tags)     filter_tags="$2"; shift 2 ;;
+      --test)     test_mode=1; shift ;;
+      -*)         die "Unknown flag for search: $1" ;;
+      *)          query="$1"; shift ;;
+    esac
+  done
+
+  [ -z "$query" ] && die "Usage: tribal search <query> [--category CAT] [--tags TAGS] [--test]"
+
+  local results=()
+  local scores=()
+  local now
+  now=$(now_epoch)
+  local thirty_days=$((30 * 86400))
+  local ninety_days=$((90 * 86400))
+
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+
+    # Apply category filter
+    if [ -n "$filter_category" ]; then
+      local fc
+      fc=$(get_field "$file" "category")
+      [ "$fc" != "$filter_category" ] && continue
+    fi
+
+    # Apply tags filter
+    if [ -n "$filter_tags" ]; then
+      local ft
+      ft=$(get_field "$file" "tags")
+      if ! echo "$ft" | grep -qi "$filter_tags"; then
+        continue
+      fi
+    fi
+
+    local score=0
+
+    # Tag match (weight 10)
+    local file_tags
+    file_tags=$(get_field "$file" "tags")
+    if echo "$file_tags" | grep -qi "$query"; then
+      score=$((score + 10))
+    fi
+
+    # Title match (weight 7)
+    local file_title
+    file_title=$(get_field "$file" "title")
+    if echo "$file_title" | grep -qi "$query"; then
+      score=$((score + 7))
+    fi
+
+    # Body match (weight 3)
+    if awk 'BEGIN{c=0} /^---$/{c++;next} c>=2{print}' "$file" | grep -qi "$query"; then
+      score=$((score + 3))
+    fi
+
+    # Skip if no match at all
+    [ "$score" -eq 0 ] && continue
+
+    # Recency bonus
+    local mtime
+    mtime=$(file_mtime "$file")
+    local age=$((now - mtime))
+    if [ "$age" -lt "$thirty_days" ]; then
+      score=$((score + 2))
+    elif [ "$age" -lt "$ninety_days" ]; then
+      score=$((score + 1))
+    fi
+
+    # Confidence multiplier (approximate with integers: high=10, medium=7, low=4, divide by 10)
+    local conf
+    conf=$(get_field "$file" "confidence")
+    case "$conf" in
+      high)   score=$((score * 10 / 10)) ;;
+      medium) score=$((score * 7 / 10)) ;;
+      low)    score=$((score * 4 / 10)) ;;
+    esac
+
+    # Ensure minimum score of 1 if there was a match
+    [ "$score" -lt 1 ] && score=1
+
+    results+=("$file")
+    scores+=("$score")
+  done < <(find "$ENTRIES_DIR" -name '*.md' -type f 2>/dev/null)
+
+  if [ ${#results[@]} -eq 0 ]; then
+    if [ "$test_mode" -eq 1 ]; then
+      exit 1
+    fi
+    echo "No results found for: $query"
+    return 1
+  fi
+
+  if [ "$test_mode" -eq 1 ]; then
+    exit 0
+  fi
+
+  # Sort results by score (descending) using a simple bubble sort for portability
+  local n=${#results[@]}
+  local i j
+  for ((i = 0; i < n - 1; i++)); do
+    for ((j = 0; j < n - i - 1; j++)); do
+      if [ "${scores[$j]}" -lt "${scores[$((j + 1))]}" ]; then
+        local tmp="${results[$j]}"
+        results[$j]="${results[$((j + 1))]}"
+        results[$((j + 1))]="$tmp"
+        tmp="${scores[$j]}"
+        scores[$j]="${scores[$((j + 1))]}"
+        scores[$((j + 1))]="$tmp"
+      fi
+    done
+  done
+
+  # Display results
+  echo ""
+  echo "Search results for: $query"
+  echo "─────────────────────────────"
+  for ((i = 0; i < n; i++)); do
+    local file="${results[$i]}"
+    local rel="${file#$TRIBAL_PATH/}"
+    local t c tg co s
+    t=$(get_field "$file" "title")
+    c=$(get_field "$file" "category")
+    tg=$(get_field "$file" "tags")
+    co=$(get_field "$file" "confidence")
+    s=$(get_field "$file" "summary")
+    echo ""
+    echo "  [$co] $t"
+    echo "  Category: $c | Tags: $tg"
+    echo "  $s"
+    echo "  Path: $rel (score: ${scores[$i]})"
+  done
+  echo ""
+}
+
+# ── Command: list ─────────────────────────────────────────────
+cmd_list() {
+  local filter_category=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --category) filter_category="$2"; shift 2 ;;
+      *)          die "Unknown flag for list: $1" ;;
+    esac
+  done
+
+  local count=0
+  echo ""
+  echo "Tribal Knowledge Entries"
+  echo "════════════════════════"
+
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+
+    local category
+    category=$(get_field "$file" "category")
+
+    if [ -n "$filter_category" ] && [ "$category" != "$filter_category" ]; then
+      continue
+    fi
+
+    local title confidence summary
+    title=$(get_field "$file" "title")
+    confidence=$(get_field "$file" "confidence")
+    summary=$(get_field "$file" "summary")
+    local rel="${file#$TRIBAL_PATH/}"
+
+    echo "  [$confidence] $title ($category)"
+    echo "    $summary"
+    echo "    $rel"
+    echo ""
+    count=$((count + 1))
+  done < <(find "$ENTRIES_DIR" -name '*.md' -type f 2>/dev/null | sort)
+
+  echo "Total: $count entries"
+  if [ -n "$filter_category" ]; then
+    echo "Filter: category=$filter_category"
+  fi
+  echo ""
+}
+
+# ── Command: update ───────────────────────────────────────────
+cmd_update() {
+  local slug="${1:-}"
+  [ -z "$slug" ] && die "Usage: tribal update <slug>"
+
+  local filepath="$ENTRIES_DIR/$slug.md"
+  [ -f "$filepath" ] || die "Entry not found: $slug"
+
+  local editor="${VISUAL:-${EDITOR:-vi}}"
+  "$editor" "$filepath"
+
+  # Security check after edit
+  if ! security_check "$filepath"; then
+    echo "WARNING: Security check failed after edit." >&2
+    echo "The file has been saved but may contain secrets." >&2
+    if confirm "Re-open editor to fix?"; then
+      "$editor" "$filepath"
+    fi
+  fi
+
+  # Update last_updated in frontmatter
+  local date_today
+  date_today=$(today)
+  local tmp
+  tmp=$(mktemp)
+  sed "s/^last_updated:.*/last_updated: $date_today/" "$filepath" > "$tmp" && mv "$tmp" "$filepath"
+
+  generate_index
+  info "Updated entry: $slug"
+}
+
+# ── Command: verify ───────────────────────────────────────────
+cmd_verify() {
+  local slug="${1:-}"
+  [ -z "$slug" ] && die "Usage: tribal verify <slug>"
+
+  local filepath="$ENTRIES_DIR/$slug.md"
+  [ -f "$filepath" ] || die "Entry not found: $slug"
+
+  local date_today
+  date_today=$(today)
+  local tmp
+  tmp=$(mktemp)
+
+  sed "s/^last_verified:.*/last_verified: $date_today/" "$filepath" > "$tmp" && mv "$tmp" "$filepath"
+  tmp=$(mktemp)
+  sed "s/^verified_by:.*/verified_by: $TRIBAL_AUTHOR/" "$filepath" > "$tmp" && mv "$tmp" "$filepath"
+
+  generate_index
+  info "Verified entry: $slug (by $TRIBAL_AUTHOR)"
+}
+
+# ── Command: reindex ──────────────────────────────────────────
+cmd_reindex() {
+  generate_index
+  local count
+  count=$(find "$ENTRIES_DIR" -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+  info "Reindexed $count entries"
+}
+
+# ── Command: stats ────────────────────────────────────────────
+cmd_stats() {
+  echo ""
+  echo "Tribal Knowledge Stats"
+  echo "══════════════════════"
+
+  local total=0
+  local -A cat_counts=()
+  local -A conf_counts=()
+  local stale_count=0
+  local now
+  now=$(now_epoch)
+  local ninety_days=$((90 * 86400))
+  local newest_file="" newest_mtime=0
+
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    total=$((total + 1))
+
+    local category confidence
+    category=$(get_field "$file" "category")
+    confidence=$(get_field "$file" "confidence")
+
+    cat_counts["$category"]=$(( ${cat_counts["$category"]:-0} + 1 ))
+    conf_counts["$confidence"]=$(( ${conf_counts["$confidence"]:-0} + 1 ))
+
+    local mtime
+    mtime=$(file_mtime "$file")
+    if [ "$mtime" -gt "$newest_mtime" ]; then
+      newest_mtime="$mtime"
+      newest_file="$file"
+    fi
+
+    # Check for stale verification
+    local last_verified
+    last_verified=$(get_field "$file" "last_verified")
+    if [ -n "$last_verified" ]; then
+      local verified_epoch
+      verified_epoch=$(date -d "$last_verified" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$last_verified" +%s 2>/dev/null || echo 0)
+      if [ $((now - verified_epoch)) -gt "$ninety_days" ]; then
+        stale_count=$((stale_count + 1))
+      fi
+    fi
+  done < <(find "$ENTRIES_DIR" -name '*.md' -type f 2>/dev/null)
+
+  echo ""
+  echo "Total entries: $total"
+  echo ""
+
+  if [ "$total" -gt 0 ]; then
+    echo "By category:"
+    for cat in "${!cat_counts[@]}"; do
+      echo "  $cat: ${cat_counts[$cat]}"
+    done
+    echo ""
+
+    echo "By confidence:"
+    for conf in "${!conf_counts[@]}"; do
+      echo "  $conf: ${conf_counts[$conf]}"
+    done
+    echo ""
+
+    if [ -n "$newest_file" ]; then
+      local newest_title
+      newest_title=$(get_field "$newest_file" "title")
+      echo "Most recently updated: $newest_title"
+    fi
+
+    if [ "$stale_count" -gt 0 ]; then
+      echo "Entries needing verification (>90 days): $stale_count"
+    fi
+  fi
+  echo ""
+}
+
+# ── Command: link ─────────────────────────────────────────────
+cmd_link() {
+  local do_claude=0 do_cursor=0 do_codex=0
+
+  if [ $# -eq 0 ]; then
+    # Default: all
+    do_claude=1; do_cursor=1; do_codex=1
+  fi
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --claude) do_claude=1; shift ;;
+      --cursor) do_cursor=1; shift ;;
+      --codex)  do_codex=1; shift ;;
+      --all)    do_claude=1; do_cursor=1; do_codex=1; shift ;;
+      *)        die "Unknown flag for link: $1" ;;
+    esac
+  done
+
+  local skills_dir="$TRIBAL_PATH/skills"
+
+  if [ "$do_claude" -eq 1 ]; then
+    local claude_dir="$HOME/.claude/skills"
+    mkdir -p "$claude_dir"
+    if [ -f "$skills_dir/claude-code.md" ]; then
+      cp "$skills_dir/claude-code.md" "$claude_dir/tribal.md"
+      info "Installed Claude Code skill: $claude_dir/tribal.md"
+    else
+      echo "WARNING: skills/claude-code.md not found" >&2
+    fi
+  fi
+
+  if [ "$do_cursor" -eq 1 ]; then
+    if [ -f "$skills_dir/cursor.md" ]; then
+      local cursor_file=".cursorrules"
+      # Append to project-level .cursorrules
+      if [ -f "$cursor_file" ]; then
+        echo "" >> "$cursor_file"
+        cat "$skills_dir/cursor.md" >> "$cursor_file"
+      else
+        cp "$skills_dir/cursor.md" "$cursor_file"
+      fi
+      info "Installed Cursor rules: $cursor_file"
+    else
+      echo "WARNING: skills/cursor.md not found" >&2
+    fi
+  fi
+
+  if [ "$do_codex" -eq 1 ]; then
+    local codex_file="codex.md"
+    if [ -f "$skills_dir/codex.md" ]; then
+      cp "$skills_dir/codex.md" "$codex_file"
+      info "Installed Codex config: $codex_file"
+    else
+      echo "WARNING: skills/codex.md not found" >&2
+    fi
+  fi
+}
+
+# ── Command: help ─────────────────────────────────────────────
+cmd_help() {
+  local subcmd="${1:-}"
+
+  if [ -z "$subcmd" ]; then
+    cat << 'HELP'
+tribal — git-backed tribal knowledge manager
+
+Usage: tribal <command> [options]
+
+Commands:
+  init [path]           Initialize a new knowledge base
+  add [options]         Add a new knowledge entry
+  search <query>        Search entries with ranked results
+  list [--category]     List all entries
+  update <slug>         Edit an existing entry
+  verify <slug>         Mark entry as verified
+  reindex               Rebuild INDEX.md
+  stats                 Show knowledge base statistics
+  link [--claude|--cursor|--codex|--all]
+                        Install LLM skill files
+  help [command]        Show help
+  version               Show version
+
+Run 'tribal help <command>' for details on a specific command.
+HELP
+    return
+  fi
+
+  case "$subcmd" in
+    add)
+      cat << 'HELP'
+tribal add — Add a new knowledge entry
+
+Usage: tribal add [options]
+
+Options:
+  --title TEXT        Entry title (required; interactive if omitted)
+  --category CAT     Category (environment|debugging|architecture|process|tooling|testing|deployment|security)
+  --tags TAGS        Comma-separated tags
+  --confidence LVL   Confidence level (high|medium|low) [default: medium]
+  --summary TEXT      One-line summary
+  --body TEXT         Entry body content
+  --force            Skip security check
+
+If no --title is given, enters interactive mode.
+HELP
+      ;;
+    search)
+      cat << 'HELP'
+tribal search — Search entries with ranked results
+
+Usage: tribal search <query> [options]
+
+Options:
+  --category CAT     Filter by category
+  --tags TAGS        Filter by tags
+  --test             Exit with code 0 if results found, 1 if none
+
+Results are ranked by: tag match (10) > title match (7) > body match (3),
+with bonuses for recency and confidence level.
+HELP
+      ;;
+    *)
+      echo "No detailed help for: $subcmd"
+      echo "Run 'tribal help' for command list."
+      ;;
+  esac
+}
+
+# ── Argument Parser (main) ────────────────────────────────────
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    init)    cmd_init "$@" ;;
+    add)     cmd_add "$@" ;;
+    search)  cmd_search "$@" ;;
+    list)    cmd_list "$@" ;;
+    update)  cmd_update "$@" ;;
+    verify)  cmd_verify "$@" ;;
+    reindex) cmd_reindex "$@" ;;
+    stats)   cmd_stats "$@" ;;
+    link)    cmd_link "$@" ;;
+    help|--help|-h) cmd_help "$@" ;;
+    version|--version|-v) echo "tribal $TRIBAL_VERSION" ;;
+    *)       die "Unknown command: $cmd. Run 'tribal help' for usage." ;;
+  esac
+}
+
+main "$@"

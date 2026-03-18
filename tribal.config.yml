@@ -1,0 +1,46 @@
+# Tribal configuration
+version: 1
+
+# Core settings
+tribal_path: ~/.tribal          # Override with TRIBAL_PATH env var
+author: null                    # Override with TRIBAL_AUTHOR env var; null = git config user.name
+
+# Categories (extensible)
+categories:
+  - environment
+  - debugging
+  - architecture
+  - process
+  - tooling
+  - testing
+  - deployment
+  - security
+
+# Chat integration
+chat:
+  enabled: false
+
+  llm:
+    provider: anthropic         # anthropic | openai
+    model: null                 # null = provider default
+
+  slack:
+    enabled: false
+    channels: []                # Mode A: dedicated channel IDs
+    reaction_emoji: "book"      # Mode B: emoji to watch
+    mode: channel               # channel | reaction
+
+  teams:
+    enabled: false
+    tenant_id: null
+    team_id: null
+    channels: []                # Mode A: channel IDs
+    reaction_emoji: "book"      # Mode B
+    mode: channel               # channel | reaction
+
+  # Mode C: auto-scrape (v1 schema only, not implemented)
+  auto_scrape:
+    enabled: false
+    channels: []
+    keywords: []
+    min_thread_length: 3

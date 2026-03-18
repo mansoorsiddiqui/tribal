@@ -1,0 +1,78 @@
+name: Chat Sync
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Sync mode override'
+        required: false
+        type: choice
+        options:
+          - channel
+          - reaction
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if chat sync is enabled
+        id: config
+        run: |
+          if [ ! -f tribal.config.yml ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Parse config for enabled flags
+          chat_enabled=$(grep -A1 '^chat:' tribal.config.yml | grep 'enabled:' | head -1 | awk '{print $2}')
+          if [ "$chat_enabled" != "true" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+          # Check Slack
+          slack_enabled=$(sed -n '/slack:/,/teams:/p' tribal.config.yml | grep 'enabled:' | head -1 | awk '{print $2}')
+          echo "slack_enabled=${slack_enabled:-false}" >> "$GITHUB_OUTPUT"
+
+          # Check Teams
+          teams_enabled=$(sed -n '/teams:/,/auto_scrape:/p' tribal.config.yml | grep 'enabled:' | head -1 | awk '{print $2}')
+          echo "teams_enabled=${teams_enabled:-false}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync Slack
+        if: steps.config.outputs.enabled == 'true' && steps.config.outputs.slack_enabled == 'true'
+        env:
+          SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: bash chat-sync/sync.sh slack
+
+      - name: Sync Teams
+        if: steps.config.outputs.enabled == 'true' && steps.config.outputs.teams_enabled == 'true'
+        env:
+          TEAMS_CLIENT_ID: ${{ secrets.TEAMS_CLIENT_ID }}
+          TEAMS_CLIENT_SECRET: ${{ secrets.TEAMS_CLIENT_SECRET }}
+          TEAMS_TENANT_ID: ${{ secrets.TEAMS_TENANT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: bash chat-sync/sync.sh teams
+
+      - name: Commit new entries
+        if: steps.config.outputs.enabled == 'true'
+        run: |
+          git config user.name "tribal-bot"
+          git config user.email "tribal-bot@users.noreply.github.com"
+          git add entries/ INDEX.md .tribal-sync-state.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(sync): add entries from chat [$(date +%Y-%m-%d)]"
+            git pull --rebase origin main || true
+            git push origin main
+          else
+            echo "No new entries to commit"
+          fi
