@@ -1,91 +1,133 @@
-# Tribal Knowledge Base — LLM Bootstrap
+# Tribal Knowledge — Installation Instructions
 
-This file is optimized for LLM consumption. It tells coding assistants how to use
-the tribal knowledge base in this repository.
+You are an LLM coding agent. A developer has asked you to install their team's tribal knowledge base on their machine. Follow every step below exactly.
 
-## What is Tribal?
+## Step 1: Clone the knowledge base
 
-Tribal is a git-backed knowledge base for team knowledge — the kind of information
-that lives in people's heads, Slack threads, or meeting notes. It stores entries as
-Markdown files with YAML frontmatter and provides ranked search via a bash CLI.
-
-## Quick Start for LLMs
-
-### 1. Search Before Acting
-
-Before investigating errors, debugging, or proposing solutions:
+Clone this repository to `~/.tribal`:
 
 ```bash
-tribal search "<keywords>"
+git clone <THIS_REPO_URL> ~/.tribal
 ```
 
-This returns ranked results. Read the top result's file for the documented solution.
+Replace `<THIS_REPO_URL>` with the URL of the repository where you found this file. If the developer gave you a URL, use that.
 
-### 2. Capture After Resolving
-
-After resolving a non-trivial issue:
+Verify it worked:
 
 ```bash
-tribal add \
-  --title "Short Searchable Title" \
-  --category <environment|debugging|architecture|process|tooling|testing|deployment|security> \
-  --tags "tag1,tag2" \
-  --confidence <high|medium|low> \
-  --summary "One-line description" \
-  --body "## Problem\n...\n\n## Solution\n...\n\n## Context\n..."
+ls ~/.tribal/tribal
 ```
 
-### 3. Update, Don't Duplicate
+## Step 2: Create the CLI wrapper
 
-Always `tribal search` before adding. If an entry exists but is outdated:
+Create a wrapper script so `tribal` is available from anywhere:
 
 ```bash
-tribal update <slug>
+mkdir -p ~/.local/bin
+
+cat > ~/.local/bin/tribal << 'WRAPPER'
+#!/usr/bin/env bash
+TRIBAL_HOME="${TRIBAL_PATH:-$HOME/.tribal}"
+
+# Auto-update: pull if last pull was >1h ago
+LAST_PULL_FILE="$TRIBAL_HOME/.last-pull"
+NOW=$(date +%s)
+if [ ! -f "$LAST_PULL_FILE" ] || [ $(( NOW - $(cat "$LAST_PULL_FILE" 2>/dev/null || echo 0) )) -gt 3600 ]; then
+  (git -C "$TRIBAL_HOME" pull --rebase --quiet 2>/dev/null &)
+  echo "$NOW" > "$LAST_PULL_FILE"
+fi
+
+export TRIBAL_PATH="$TRIBAL_HOME"
+exec bash "$TRIBAL_HOME/tribal" "$@"
+WRAPPER
+
+chmod +x ~/.local/bin/tribal
 ```
 
-### 4. Verify When Confirmed
-
-When you successfully use an entry's solution:
+If `~/.local/bin` is not on the developer's PATH, also add it:
 
 ```bash
-tribal verify <slug>
+# Check if already on PATH
+if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+  # Add to shell profile
+  SHELL_RC="$HOME/.bashrc"
+  [ -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.zshrc"
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 ```
 
-## Entry Schema
+Verify it works:
 
-Entries are Markdown files in `entries/` with YAML frontmatter:
-
-```yaml
----
-title: "Human-readable title"
-slug: kebab-case-filename
-category: debugging
-tags: [tool, error-code, topic]
-confidence: high
-author: Name
-created: 2026-01-01
-last_updated: 2026-01-01
-last_verified: 2026-01-01
-verified_by: Name
-summary: "One sentence for scanning"
----
+```bash
+tribal version
 ```
 
-## All Commands
+## Step 3: Install the skill file for your LLM agent
 
-| Command | Description |
-|---------|-------------|
-| `tribal search <q>` | Ranked search (tag > title > body) |
-| `tribal add [opts]` | Add entry (interactive if no flags) |
-| `tribal list` | List all entries |
-| `tribal update <slug>` | Edit entry in $EDITOR |
-| `tribal verify <slug>` | Mark as verified today |
-| `tribal reindex` | Rebuild INDEX.md |
-| `tribal stats` | Knowledge base statistics |
-| `tribal link` | Install LLM skill files |
+This is the critical step. The skill file teaches you (the LLM) how to use tribal knowledge automatically during future sessions.
 
-## INDEX.md
+### For Claude Code:
 
-The file `INDEX.md` at the repo root contains a pipe-delimited table of all entries
-with path, category, tags, confidence, and summary. It is auto-regenerated on every
-add/update/reindex and by the pre-commit hook.
+```bash
+mkdir -p ~/.claude/skills
+cp ~/.tribal/skills/claude-code.md ~/.claude/skills/tribal.md
+```
+
+### For Cursor:
+
+```bash
+# Install to the user's current project, or global config
+cp ~/.tribal/skills/cursor.md .cursorrules
+```
+
+### For Codex:
+
+```bash
+cp ~/.tribal/skills/codex.md codex.md
+```
+
+Or run the built-in command which does all three:
+
+```bash
+tribal link --all
+```
+
+## Step 4: Verify the installation
+
+Run these commands to confirm everything is working:
+
+```bash
+# CLI works
+tribal version
+
+# Knowledge base has entries
+tribal stats
+
+# Search works
+tribal search "example"
+
+# Skill file is installed
+ls ~/.claude/skills/tribal.md 2>/dev/null && echo "Claude Code skill: installed"
+```
+
+## Step 5: Tell the developer what happened
+
+Report back to the developer:
+
+1. Where the knowledge base was cloned (`~/.tribal`)
+2. That the `tribal` CLI is available on their PATH
+3. That the skill file was installed (which agent: Claude Code, Cursor, Codex)
+4. How many entries are currently in the knowledge base (`tribal stats`)
+5. That future sessions will automatically search and contribute to the knowledge base
+
+## What the skill file does
+
+Now that the skill file is installed, in all future coding sessions you will:
+
+- **Search tribal knowledge before debugging**: When you encounter an error, run `tribal search "<error keywords>"` before investigating. If an entry exists, read it and apply the documented solution.
+- **Search before proposing patterns**: When asked about team conventions, architecture, or "how do we do X", search first.
+- **Capture knowledge after resolving issues**: When you help solve a non-trivial problem (took >3 steps), run `tribal add` to save it for the team.
+- **Sync via git**: After adding or updating knowledge, commit and push so the whole team benefits.
+
+You do NOT need to be told to do this. The skill file makes this part of your standard workflow.

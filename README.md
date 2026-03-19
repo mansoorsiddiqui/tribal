@@ -1,153 +1,107 @@
 # Tribal
 
-Git-backed tribal knowledge for teams. Capture, search, and share the knowledge that lives in people's heads.
+Your AI coding assistant already knows how to debug, refactor, and write code. What it doesn't know is *your team's* way of doing things — the workarounds, the gotchas, the "oh we tried that and here's what actually works." That's tribal knowledge, and it's usually trapped in people's heads or buried in Slack threads.
 
-## What is Tribal?
+Tribal fixes this. It's a shared knowledge base that your LLM coding agents (Claude Code, Cursor, Codex) **automatically read from and write to** as you work. When your AI hits an error someone on your team already solved, it finds the answer. When it helps you solve something new, it captures it for the next person.
 
-Tribal is a bash CLI that stores team knowledge as Markdown files with YAML frontmatter in a git repo. It provides ranked search, security filtering, and integrates with LLM coding assistants (Claude Code, Cursor, Codex) so your AI tools can automatically search and contribute to your team's knowledge base.
+## How It Works
 
-## Quick Start
-
-```bash
-# Initialize in current directory
-./tribal init
-
-# Add knowledge
-./tribal add --title "Docker DNS on Linux" \
-  --category debugging \
-  --tags "docker,dns,linux" \
-  --confidence high \
-  --summary "Fix DNS in containers by configuring daemon.json" \
-  --body "## Problem
-DNS fails inside Docker containers on systemd-resolved hosts.
-
-## Solution
-Add dns entries to /etc/docker/daemon.json and restart Docker."
-
-# Search
-./tribal search "docker dns"
-
-# List all entries
-./tribal list
-
-# Filter by category
-./tribal list --category debugging
+```
+Developer + AI agent working on code
+         │
+         ├─ AI hits an error ──→ tribal search "error text" ──→ finds team's known fix ──→ applies it
+         │
+         └─ AI solves something new ──→ tribal add ──→ captured for the whole team
+         │
+         └─ git push ──→ knowledge syncs to everyone
 ```
 
-## Installation
+Your LLM agent does this automatically. You don't run these commands — your AI does, as part of its normal workflow, because tribal installs a skill file that teaches it when to search and when to capture.
 
-### Option A: Clone and use directly
+## Setup for Your Team
 
-```bash
-git clone <your-repo-url> ~/.tribal
-export TRIBAL_PATH=~/.tribal
-export PATH="$TRIBAL_PATH:$PATH"
-tribal init
-```
-
-### Option B: Use the installer
+### 1. Org leader: Fork/clone this repo as your team's knowledge base
 
 ```bash
-TRIBAL_REPO_URL=git@github.com:yourorg/tribal.git bash install.sh
+# Create your org's tribal repo
+gh repo create yourorg/tribal --template mansoorsiddiqui/tribal --private
 ```
 
-The installer clones to `~/.tribal` and creates a wrapper script on your PATH with automatic background updates.
+Configure `tribal.config.yml` for your team (categories, chat sync if desired), seed it with a few entries your team already knows, and push.
 
-## Commands
+### 2. Team members: One-liner to set up
 
-| Command | Description |
-|---------|-------------|
-| `tribal init [path]` | Initialize a new knowledge base |
-| `tribal add [options]` | Add a knowledge entry (interactive if no flags) |
-| `tribal search <query>` | Ranked search across all entries |
-| `tribal list [--category CAT]` | List entries with optional filter |
-| `tribal update <slug>` | Edit an entry in $EDITOR |
-| `tribal verify <slug>` | Mark an entry as verified |
-| `tribal reindex` | Rebuild INDEX.md |
-| `tribal stats` | Show knowledge base statistics |
-| `tribal link [--claude\|--cursor\|--codex\|--all]` | Install LLM skill files |
-| `tribal help [command]` | Show help |
-| `tribal version` | Show version |
+Paste this into your AI coding agent (Claude Code, Cursor, Codex):
 
-## Entry Schema
+```
+Read https://github.com/yourorg/tribal/blob/main/INSTALL_LLM.md and follow every step to install our team's tribal knowledge base on my machine.
+```
 
-Entries are Markdown files in `entries/` with YAML frontmatter:
+That's it. Your AI reads the instructions, clones the repo, installs the CLI, hooks itself up, and starts using your team's knowledge automatically.
+
+## What Happens After Setup
+
+**Your AI agent will automatically:**
+
+- **Search before debugging** — Before investigating any error, it runs `tribal search` to check if someone on your team already solved it
+- **Search before proposing patterns** — Before suggesting architecture or conventions, it checks what your team has documented
+- **Capture after resolving** — After a non-trivial debugging session, it writes up the problem and solution as a new entry
+- **Update stale entries** — If it finds an outdated entry, it updates it rather than creating a duplicate
+- **Sync via git** — All knowledge is committed and pushed, so everyone's AI has access
+
+**You don't have to think about it.** The knowledge base grows as your team works.
+
+## What's Inside
+
+```
+entries/              ← Knowledge entries (Markdown + YAML frontmatter)
+INDEX.md              ← Auto-generated index for fast LLM scanning
+tribal                ← CLI that your AI agent calls
+skills/               ← Instruction files that teach LLMs the workflow
+tribal.config.yml     ← Configuration
+chat-sync/            ← Optional: extract knowledge from Slack/Teams
+```
+
+Each entry looks like:
 
 ```yaml
 ---
-title: "Descriptive Title"
-slug: descriptive-title
-category: debugging          # environment|debugging|architecture|process|tooling|testing|deployment|security
-tags: [docker, dns, linux]
-confidence: high             # high|medium|low
-author: Jane Smith
-created: 2026-03-18
-last_updated: 2026-03-18
-last_verified: 2026-03-18
-verified_by: Jane Smith
-summary: "One-line summary for scanning"
+title: "Docker DNS Fails on Linux with systemd-resolved"
+category: debugging
+tags: [docker, dns, linux, systemd-resolved]
+confidence: high
+summary: "Configure daemon.json with explicit DNS servers"
 ---
 
 ## Problem
-...
+Containers can't resolve DNS on Ubuntu/Fedora hosts using systemd-resolved...
 
 ## Solution
-...
-
-## Context
-...
+Add dns config to /etc/docker/daemon.json...
 ```
 
-## Search Ranking
+## CLI Reference
 
-Results are ranked by a composite score:
-- **Tag match**: weight 10
-- **Title match**: weight 7
-- **Body match**: weight 3
-- **Recency bonus**: +2 if modified in last 30 days, +1 if last 90 days
-- **Confidence multiplier**: high=1.0, medium=0.7, low=0.4
+Your AI uses these commands — you typically don't need to run them manually:
 
-## Security
-
-A built-in security filter scans entries for potential secrets before committing:
-- API keys (OpenAI, AWS, GitHub PATs)
-- Connection strings (MongoDB, PostgreSQL)
-- Private keys
-- JWTs
-- Password/token assignments
-
-Use `--force` to bypass if you get a false positive. The pre-commit hook also runs the security filter automatically.
-
-## LLM Integration
-
-Run `tribal link --all` to install skill files for:
-
-- **Claude Code**: `~/.claude/skills/tribal.md`
-- **Cursor**: `.cursorrules` in project root
-- **Codex**: `codex.md` in project root
-
-The skill files instruct LLM assistants to:
-1. Search tribal knowledge before investigating errors
-2. Capture new knowledge after resolving non-trivial issues
-3. Update existing entries instead of creating duplicates
+| Command | What the AI uses it for |
+|---------|------------------------|
+| `tribal search <query>` | Check if the team already knows about this |
+| `tribal add --title "..." ...` | Capture new knowledge after solving something |
+| `tribal list` | Browse what the team knows |
+| `tribal update <slug>` | Fix or expand an existing entry |
+| `tribal verify <slug>` | Confirm an entry is still accurate |
+| `tribal reindex` | Rebuild the index (also runs on pre-commit) |
+| `tribal stats` | See knowledge base health |
+| `tribal link` | Re-install the LLM skill files |
 
 ## Chat Sync (Optional)
 
-Tribal can automatically extract knowledge from Slack or Microsoft Teams via a GitHub Action that runs every 15 minutes.
+Tribal can also pull knowledge from Slack or Microsoft Teams automatically via a GitHub Action. Configure channels or a reaction emoji in `tribal.config.yml`, and messages get extracted, structured by an LLM, and added as entries.
 
-Modes:
-- **Channel mode**: Monitor a dedicated knowledge channel
-- **Reaction mode**: Watch for a specific emoji reaction on messages
+## Security
 
-Configure in `tribal.config.yml` and set the required secrets in your GitHub repo settings. See `chat-sync/sync.sh` for details.
-
-## Testing
-
-```bash
-bats tests/
-```
-
-Requires [bats-core](https://github.com/bats-core/bats-core).
+A built-in filter blocks entries containing API keys, passwords, connection strings, private keys, and JWTs. The pre-commit hook enforces this too. Use `--force` for false positives.
 
 ## License
 
