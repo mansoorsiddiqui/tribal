@@ -44,12 +44,10 @@ WRAPPER
 chmod +x ~/.local/bin/tribal
 ```
 
-If `~/.local/bin` is not on the developer's PATH, also add it:
+If `~/.local/bin` is not on the developer's PATH, add it:
 
 ```bash
-# Check if already on PATH
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
-  # Add to shell profile
   SHELL_RC="$HOME/.bashrc"
   [ -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.zshrc"
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
@@ -57,77 +55,48 @@ if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
 fi
 ```
 
-Verify it works:
+## Step 3: Install global skill files
 
-```bash
-tribal version
-```
-
-## Step 3: Install the skill file for your LLM agent
-
-This is the critical step. The skill file teaches you (the LLM) how to use tribal knowledge automatically during future sessions.
-
-### For Claude Code:
-
-```bash
-mkdir -p ~/.claude/skills
-cp ~/.tribal/skills/claude-code.md ~/.claude/skills/tribal.md
-```
-
-### For Cursor:
-
-```bash
-# Install to the user's current project, or global config
-cp ~/.tribal/skills/cursor.md .cursorrules
-```
-
-### For Codex:
-
-```bash
-cp ~/.tribal/skills/codex.md codex.md
-```
-
-Or run the built-in command which does all three:
+This is the critical step. Run:
 
 ```bash
 tribal link --all
 ```
 
-## Step 4: Verify the installation
+This installs skill files that teach LLM agents to automatically use tribal knowledge in every session:
 
-Run these commands to confirm everything is working:
+- **Claude Code**: `~/.claude/skills/tribal.md` (loaded automatically in every Claude Code session)
+- **Cursor**: `~/.cursorrules` (loaded in every Cursor session)
+- **Codex**: `~/codex.md`
+
+These are **global** — they apply to every project on this machine. The developer can opt specific projects in or out later with `tribal hook` / `tribal unhook`.
+
+## Step 4: Verify
 
 ```bash
-# CLI works
 tribal version
-
-# Knowledge base has entries
 tribal stats
-
-# Search works
 tribal search "example"
-
-# Skill file is installed
-ls ~/.claude/skills/tribal.md 2>/dev/null && echo "Claude Code skill: installed"
 ```
 
-## Step 5: Tell the developer what happened
+## Step 5: Tell the developer
 
-Report back to the developer:
+Report back:
 
-1. Where the knowledge base was cloned (`~/.tribal`)
-2. That the `tribal` CLI is available on their PATH
-3. That the skill file was installed (which agent: Claude Code, Cursor, Codex)
-4. How many entries are currently in the knowledge base (`tribal stats`)
-5. That future sessions will automatically search and contribute to the knowledge base
+1. Knowledge base cloned to `~/.tribal`
+2. `tribal` CLI is on their PATH
+3. Global skill files installed — tribal knowledge is now active in every LLM coding session
+4. Number of entries currently in the knowledge base
+5. To reinforce tribal for a specific project: `tribal hook claude` (adds instructions to that project's `CLAUDE.md`)
+6. To opt a project out: `tribal unhook claude` (tells the LLM to skip tribal for that repo)
 
-## What the skill file does
+## What happens now
 
-Now that the skill file is installed, in all future coding sessions you will:
+In all future sessions, your global skill file will instruct you to:
 
-- **Search tribal knowledge before debugging**: When you encounter an error, run `tribal search "<error keywords>"` before investigating. If an entry exists, read it and apply the documented solution.
-- **Search before proposing patterns**: When asked about team conventions, architecture, or "how do we do X", search first.
-- **Capture knowledge after resolving issues**: When you help solve a non-trivial problem (took >3 steps), run `tribal add` to save it for the team.
-- **Sync via git**: After adding or updating knowledge, commit and push so the whole team benefits.
+- **Search before debugging**: `tribal search "<error>"` before investigating
+- **Search before proposing patterns**: check team conventions first
+- **Capture after resolving**: `tribal add` when you solve something non-trivial
+- **Sync via git**: commit and push so the whole team benefits
 
-You do NOT need to be told to do this. The skill file makes this part of your standard workflow.
+This is automatic. You do not need to be told to do this.

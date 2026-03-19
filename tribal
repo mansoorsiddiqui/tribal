@@ -666,6 +666,200 @@ cmd_link() {
   fi
 }
 
+# ── Hook markers ──────────────────────────────────────────────
+HOOK_START="# >>> tribal knowledge base >>>"
+HOOK_END="# <<< tribal knowledge base <<<"
+
+hook_block_claude() {
+  cat << 'HOOKEOF'
+# >>> tribal knowledge base >>>
+# This project uses tribal knowledge. The tribal CLI is installed at ~/.tribal.
+# These instructions are automatic — do not remove this block.
+
+## Tribal Knowledge Base
+
+You have access to a shared team knowledge base via the `tribal` CLI (`~/.tribal`).
+
+**ALWAYS do this automatically — you do not need to be asked:**
+
+1. **Search before debugging**: Before investigating any error, run `tribal search "<error keywords>"`. If an entry exists, read it and apply the solution before trying your own approach.
+2. **Search before proposing patterns**: When asked about conventions, architecture, or "how do we do X", run `tribal search` first.
+3. **Capture after resolving**: After helping solve a non-trivial problem (>3 steps or >10 min), capture it:
+   ```
+   cd ~/.tribal && git pull --rebase origin main 2>/dev/null
+   tribal add --title "..." --category <cat> --tags "..." --confidence medium --summary "..." --body "..."
+   cd ~/.tribal && git add entries/ INDEX.md && git commit -m "knowledge: <title>" && git push origin main
+   ```
+4. **Update, don't duplicate**: Always search before adding. Use `tribal update <slug>` for stale entries.
+5. **Verify when confirmed**: After successfully using an entry, run `tribal verify <slug>`.
+# <<< tribal knowledge base <<<
+HOOKEOF
+}
+
+hook_block_cursor() {
+  cat << 'HOOKEOF'
+# >>> tribal knowledge base >>>
+# Search tribal knowledge before debugging: tribal search "<error>"
+# Capture knowledge after resolving issues: tribal add --title "..." ...
+# Update stale entries: tribal update <slug>
+# CLI location: ~/.tribal
+# Do this automatically without being asked.
+# <<< tribal knowledge base <<<
+HOOKEOF
+}
+
+hook_block_codex() {
+  cat << 'HOOKEOF'
+# >>> tribal knowledge base >>>
+# Search tribal knowledge before debugging: tribal search "<error>"
+# Capture knowledge after resolving issues: tribal add --title "..." ...
+# CLI location: ~/.tribal. Do this automatically.
+# <<< tribal knowledge base <<<
+HOOKEOF
+}
+
+unhook_block_claude() {
+  cat << 'HOOKEOF'
+# >>> tribal knowledge base >>>
+# Do NOT use the tribal knowledge base in this project.
+# Do not run tribal search, tribal add, or any tribal commands when working in this repo.
+# <<< tribal knowledge base <<<
+HOOKEOF
+}
+
+unhook_block_cursor() {
+  cat << 'HOOKEOF'
+# >>> tribal knowledge base >>>
+# Do NOT use tribal knowledge commands in this project.
+# <<< tribal knowledge base <<<
+HOOKEOF
+}
+
+unhook_block_codex() {
+  cat << 'HOOKEOF'
+# >>> tribal knowledge base >>>
+# Do NOT use tribal knowledge commands in this project.
+# <<< tribal knowledge base <<<
+HOOKEOF
+}
+
+# Remove existing tribal hook block from a file (if present)
+remove_hook_block() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  if grep -q "$HOOK_START" "$file" 2>/dev/null; then
+    local tmp
+    tmp=$(mktemp)
+    awk -v start="$HOOK_START" -v end="$HOOK_END" '
+      $0 ~ start { skip=1; next }
+      $0 ~ end { skip=0; next }
+      !skip { print }
+    ' "$file" > "$tmp"
+    # Remove trailing blank lines left behind
+    sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp" > "$file"
+    rm -f "$tmp"
+  fi
+}
+
+# Inject a hook block into a file
+inject_hook_block() {
+  local file="$1"
+  local block="$2"
+
+  # Remove existing block first
+  remove_hook_block "$file"
+
+  # Append block
+  if [ -f "$file" ]; then
+    echo "" >> "$file"
+  fi
+  echo "$block" >> "$file"
+}
+
+# ── Command: hook ─────────────────────────────────────────────
+cmd_hook() {
+  local do_claude=0 do_cursor=0 do_codex=0
+
+  if [ $# -eq 0 ]; then
+    do_claude=1; do_cursor=1; do_codex=1
+  fi
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      claude)  do_claude=1; shift ;;
+      cursor)  do_cursor=1; shift ;;
+      codex)   do_codex=1; shift ;;
+      --all)   do_claude=1; do_cursor=1; do_codex=1; shift ;;
+      *)       die "Unknown target for hook: $1. Use: claude, cursor, codex, or --all" ;;
+    esac
+  done
+
+  if [ "$do_claude" -eq 1 ]; then
+    local block
+    block=$(hook_block_claude)
+    inject_hook_block "CLAUDE.md" "$block"
+    info "Hooked tribal into CLAUDE.md"
+  fi
+
+  if [ "$do_cursor" -eq 1 ]; then
+    local block
+    block=$(hook_block_cursor)
+    inject_hook_block ".cursorrules" "$block"
+    info "Hooked tribal into .cursorrules"
+  fi
+
+  if [ "$do_codex" -eq 1 ]; then
+    local block
+    block=$(hook_block_codex)
+    inject_hook_block "codex.md" "$block"
+    info "Hooked tribal into codex.md"
+  fi
+
+  info "Tribal knowledge is now active for this project. Commit the changes to share with your team."
+}
+
+# ── Command: unhook ───────────────────────────────────────────
+cmd_unhook() {
+  local do_claude=0 do_cursor=0 do_codex=0
+
+  if [ $# -eq 0 ]; then
+    do_claude=1; do_cursor=1; do_codex=1
+  fi
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      claude)  do_claude=1; shift ;;
+      cursor)  do_cursor=1; shift ;;
+      codex)   do_codex=1; shift ;;
+      --all)   do_claude=1; do_cursor=1; do_codex=1; shift ;;
+      *)       die "Unknown target for unhook: $1. Use: claude, cursor, codex, or --all" ;;
+    esac
+  done
+
+  if [ "$do_claude" -eq 1 ]; then
+    local block
+    block=$(unhook_block_claude)
+    inject_hook_block "CLAUDE.md" "$block"
+    info "Unhooked tribal from CLAUDE.md (opt-out block added)"
+  fi
+
+  if [ "$do_cursor" -eq 1 ]; then
+    local block
+    block=$(unhook_block_cursor)
+    inject_hook_block ".cursorrules" "$block"
+    info "Unhooked tribal from .cursorrules (opt-out block added)"
+  fi
+
+  if [ "$do_codex" -eq 1 ]; then
+    local block
+    block=$(unhook_block_codex)
+    inject_hook_block "codex.md" "$block"
+    info "Unhooked tribal from codex.md (opt-out block added)"
+  fi
+
+  info "Tribal knowledge is disabled for this project. Commit the changes to share with your team."
+}
+
 # ── Command: help ─────────────────────────────────────────────
 cmd_help() {
   local subcmd="${1:-}"
@@ -686,7 +880,11 @@ Commands:
   reindex               Rebuild INDEX.md
   stats                 Show knowledge base statistics
   link [--claude|--cursor|--codex|--all]
-                        Install LLM skill files
+                        Install global LLM skill files
+  hook [claude|cursor|codex|--all]
+                        Add tribal instructions to this project's CLAUDE.md / .cursorrules
+  unhook [claude|cursor|codex|--all]
+                        Opt this project out of tribal knowledge
   help [command]        Show help
   version               Show version
 
@@ -750,6 +948,8 @@ main() {
     reindex) cmd_reindex "$@" ;;
     stats)   cmd_stats "$@" ;;
     link)    cmd_link "$@" ;;
+    hook)    cmd_hook "$@" ;;
+    unhook)  cmd_unhook "$@" ;;
     help|--help|-h) cmd_help "$@" ;;
     version|--version|-v) echo "tribal $TRIBAL_VERSION" ;;
     *)       die "Unknown command: $cmd. Run 'tribal help' for usage." ;;
