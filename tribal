@@ -642,13 +642,9 @@ cmd_link() {
   if [ "$do_cursor" -eq 1 ]; then
     if [ -f "$skills_dir/cursor.md" ]; then
       local cursor_file=".cursorrules"
-      # Append to project-level .cursorrules
-      if [ -f "$cursor_file" ]; then
-        echo "" >> "$cursor_file"
-        cat "$skills_dir/cursor.md" >> "$cursor_file"
-      else
-        cp "$skills_dir/cursor.md" "$cursor_file"
-      fi
+      local block
+      block="$HOOK_START"$'\n'"$(cat "$skills_dir/cursor.md")"$'\n'"$HOOK_END"
+      inject_hook_block "$cursor_file" "$block"
       info "Installed Cursor rules: $cursor_file"
     else
       echo "WARNING: skills/cursor.md not found" >&2
@@ -658,7 +654,9 @@ cmd_link() {
   if [ "$do_codex" -eq 1 ]; then
     local codex_file="codex.md"
     if [ -f "$skills_dir/codex.md" ]; then
-      cp "$skills_dir/codex.md" "$codex_file"
+      local block
+      block="$HOOK_START"$'\n'"$(cat "$skills_dir/codex.md")"$'\n'"$HOOK_END"
+      inject_hook_block "$codex_file" "$block"
       info "Installed Codex config: $codex_file"
     else
       echo "WARNING: skills/codex.md not found" >&2
