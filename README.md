@@ -80,6 +80,35 @@ Containers can't resolve DNS on Ubuntu/Fedora hosts using systemd-resolved...
 Add dns config to /etc/docker/daemon.json...
 ```
 
+## Per-Project Control: `hook` and `unhook`
+
+The global skill files (`tribal link --all`) make tribal active in every session. But you can also control it per-project:
+
+**Opt a project in** — reinforces tribal usage and commits the instructions so every team member's AI gets them:
+
+```bash
+cd ~/myproject
+tribal hook claude        # Adds tribal instructions to CLAUDE.md
+tribal hook cursor        # Adds tribal instructions to .cursorrules
+tribal hook               # All targets at once
+git add CLAUDE.md && git commit -m "Enable tribal knowledge"
+```
+
+This injects a managed block into the project's `CLAUDE.md` (or `.cursorrules` / `codex.md`) with explicit instructions for the AI to search and capture tribal knowledge. The block is clearly marked and idempotent — running `hook` twice won't duplicate it.
+
+**Opt a project out** — tells the AI to skip tribal for this repo:
+
+```bash
+cd ~/myproject
+tribal unhook claude      # Replaces the block with "do NOT use tribal here"
+tribal unhook             # All targets at once
+git add CLAUDE.md && git commit -m "Disable tribal knowledge"
+```
+
+This replaces any existing tribal block with an opt-out instruction. The AI will see "do NOT use tribal" and skip it for that project.
+
+**Switching back:** `tribal hook` after `tribal unhook` cleanly replaces the opt-out with the full instructions again.
+
 ## CLI Reference
 
 Your AI uses these commands — you typically don't need to run them manually:
@@ -93,7 +122,9 @@ Your AI uses these commands — you typically don't need to run them manually:
 | `tribal verify <slug>` | Confirm an entry is still accurate |
 | `tribal reindex` | Rebuild the index (also runs on pre-commit) |
 | `tribal stats` | See knowledge base health |
-| `tribal link` | Re-install the LLM skill files |
+| `tribal link` | Install global LLM skill files (once per machine) |
+| `tribal hook [target]` | Add tribal instructions to this project's CLAUDE.md / .cursorrules |
+| `tribal unhook [target]` | Opt this project out of tribal knowledge |
 
 ## Chat Sync (Optional)
 
